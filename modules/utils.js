@@ -13,21 +13,33 @@
 
 /* eslint-disable quotes */
 
+const dom = {
+  modalBodyConfirm: null,
+  buttonConfirmed: null,
+};
+
+/**
+ * Initializes components. Should be called after DOMContentLoaded event
+ */
+export function ready() {
+  getAllElementsById(dom);
+}
+
 /**
  * Adds a table to a table element
  * @param {HTMLElement} table tbody element the row is added to
- * @param {String} key first column text of the row
- * @param {String} value second column text of the row
+ * @param {String} key first column text of the row. Acts as id of the row
  * @param {boolean} selected if true, the new row will be marked as selected
- * @param {boolean} withClipBoardCopy add a clipboard button at the lase column of the row
+ * @param {boolean} withClipBoardCopy add a clipboard button at the last column of the row
+ * @param {array} columnValues texts for additional columns of the row
  */
-export const addTableRow = function(table, key, value, selected, withClipBoardCopy) {
+export const addTableRow = function(table, key, selected, withClipBoardCopy, ...columnValues) {
   const row = table.insertRow();
   row.id = key;
   row.insertCell(0).innerHTML = key;
-  if (value) {
-    row.insertCell(1).innerHTML = value;
-  }
+  columnValues.forEach((value) => {
+    row.insertCell().innerHTML = value;
+  });
   if (selected) {
     row.classList.add('table-active');
   }
@@ -64,12 +76,23 @@ export function addClipboardCopyToRow(row) {
   const button = document.createElement('button');
   button.classList.add('btn', 'btn-sm');
   button.style.padding = 0;
-  button.innerHTML = `<i class="bi bi-clipboard2-plus"></i>`;
+  button.innerHTML = `<i class="bi bi-clipboard"></i>`;
   button.onclick = (evt) => {
     const td = evt.currentTarget.parentNode.previousSibling;
     navigator.clipboard.writeText(td.innerText);
   };
   td.appendChild(button);
+}
+
+/**
+ * Adds a header cell to the given table row
+ * @param {HTMLTableRowElement} row target row
+ * @param {String} label label for the header cell
+ */
+export function insertHeaderCell(row, label) {
+  const th = document.createElement('th');
+  th.innerHTML = label;
+  row.appendChild(th);
 }
 
 /**
@@ -82,13 +105,43 @@ export function addClipboardCopyToRow(row) {
 export function addRadioButton(target, groupName, value, checked) {
   const radio = document.createElement('div');
   radio.innerHTML = `<div class="form-check">
-    <input class="form-check-input" type="radio" id="${ value}" name="${ groupName}" value="${ value}"
+    <input class="form-check-input" type="radio" id="${value}" name="${groupName}" value="${value}"
         ${checked ? 'checked' : ''}>
-    <label class="form-check-label" for="${ value}">
-      ${ value}
+    <label class="form-check-label" for="${value}">
+      ${value}
     </label>
   </div>`;
   target.appendChild(radio);
+}
+
+/**
+ * Create a list of option elements
+ * @param {HTMLElement} target target element (select)
+ * @param {array} options Array of strings to be filled as options
+ */
+export function setOptions(target, options) {
+  target.innerHTML = '';
+  options.forEach((key) => {
+    const option = document.createElement('option');
+    option.text = key;
+    target.appendChild(option);
+  });
+}
+
+/**
+ * Creates a drop down item or header
+ * @param {HTMLElement} target target element
+ * @param {array} items array of items for the drop down
+ * @param {boolean} isHeader (optional) true to add a header line
+ */
+export function addDropDownEntries(target, items, isHeader) {
+  items.forEach((value) => {
+    const li = document.createElement('li');
+    li.innerHTML = isHeader ?
+        `<h6 class="dropdown-header">${value}</h6>` :
+        `<a class="dropdown-item">${value}</a>`;
+    target.appendChild(li);
+  });
 }
 
 /**
@@ -157,10 +210,94 @@ function UserException(message) {
  * an error.
  * @param {boolean} condition If false, an error is shown to the user
  * @param {String} message Message to be shown to the user
+ * @param {HTMLElement} validatedElement Optional element that was validated
  */
-export function assert(condition, message) {
+export function assert(condition, message, validatedElement) {
+  if (validatedElement) {
+    validatedElement.classList.remove('is-invalid');
+  }
   if (!condition) {
-    showError(message, 'Error');
+    if (validatedElement) {
+      validatedElement.parentNode.getElementsByClassName('invalid-feedback')[0].innerHTML = message;
+      validatedElement.classList.add('is-invalid');
+    } else {
+      showError(message, 'Error');
+    }
     throw new UserException(message);
   }
+}
+
+/**
+ * Simple Date format that makes UTC string more readable and cuts off the milliseconds
+ * @param {Date} date to format
+ * @param {boolean} withMilliseconds don t cut off milliseconds if true
+ * @return {String} formatted date
+ */
+export function formatDate(date, withMilliseconds) {
+  if (withMilliseconds) {
+    return date.replace('T', ' ').replace('Z', '').replace('.', ' ');
+  } else {
+    return date.split('.')[0].replace('T', ' ');
+  }
+}
+
+let modalConfirm;
+
+/**
+ * Like from bootbox or bootprompt
+ * @param {String} message confirm message
+ * @param {String} action button text
+ * @param {function} callback true if confirmed
+ */
+export function confirm(message, action, callback) {
+  modalConfirm = modalConfirm ?? new bootstrap.Modal('#modalConfirm');
+  dom.modalBodyConfirm.innerHTML = message;
+  dom.buttonConfirmed.innerText = action;
+  dom.buttonConfirmed.onclick = callback;
+  modalConfirm.show();
+}
+
+/**
+ * Creates and configures an ace editor
+ * @param {String} domId id of the dom element for the ace editor
+ * @param {*} sessionMode session mode of the ace editor
+ * @param {*} readOnly sets the editor to read only and removes the line numbers
+ * @return {*} created ace editor
+ */
+export function createAceEditor(domId, sessionMode, readOnly) {
+  const result = ace.edit(domId);
+
+  result.session.setMode(sessionMode);
+  if (readOnly) {
+    result.setReadOnly(true);
+    result.renderer.setShowGutter(false);
+  }
+
+  return result;
+}
+
+/**
+ * Links the hidden input element for validation to the table
+ * @param {HTMLElement} tableElement tbody that is validated
+ * @param {HTMLElement} inputElement input element with validation
+ */
+export function addValidatorToTable(tableElement, inputElement) {
+  tableElement.addEventListener('click', () => {
+    inputElement.classList.remove('is-invalid');
+  });
+}
+
+/**
+ * Adjust selection of a table
+ * @param {HTMLElement} tbody table with the data
+ * @param {function} condition evaluate if table row should be selected or not
+ */
+export function tableAdjustSelection(tbody, condition) {
+  Array.from(tbody.rows).forEach((row) => {
+    if (condition(row)) {
+      row.classList.add('table-active');
+    } else {
+      row.classList.remove('table-active');
+    }
+  });
 }

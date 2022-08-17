@@ -1,3 +1,4 @@
+/* eslint-disable require-jsdoc */
 /*
  * Copyright (c) 2022 Contributors to the Eclipse Foundation
  *
@@ -12,10 +13,12 @@
  */
 
 /* eslint-disable new-cap */
+/* eslint-disable no-invalid-this */
 import {JSONPath} from 'https://cdn.jsdelivr.net/npm/jsonpath-plus@5.0.3/dist/index-browser-esm.min.js';
 import * as API from '../api.js';
 
 import * as Environments from '../environments/environments.js';
+import * as SearchFilter from './searchFilter.js';
 import * as Utils from '../utils.js';
 import * as Fields from './fields.js';
 
@@ -24,14 +27,24 @@ let theSearchCursor;
 
 let thingJsonEditor;
 
+let thingTemplates;
+
 const observers = [];
 
 const dom = {
-  searchFilterEdit: null,
-  thingsTable: null,
+  thingsTableHead: null,
+  thingsTableBody: null,
   thingDetails: null,
   thingId: null,
+  buttonCreateThing: null,
+  buttonSaveThing: null,
+  buttonDeleteThing: null,
+  inputThingDefinition: null,
+  ulThingDefinitions: null,
   tabModifyThing: null,
+  searchFilterEdit: null,
+  collapseThings: null,
+  tabThings: null,
 };
 
 /**
@@ -46,30 +59,44 @@ export function addChangeListener(observer) {
  * Initializes components. Should be called after DOMContentLoaded event
  */
 export async function ready() {
+  Environments.addChangeListener(onEnvironmentChanged);
+
   Utils.getAllElementsById(dom);
 
-  thingJsonEditor = ace.edit('thingJsonEditor');
-  thingJsonEditor.session.setMode('ace/mode/json');
+  thingJsonEditor = Utils.createAceEditor('thingJsonEditor', 'ace/mode/json');
 
-  document.getElementById('pinnedThings').onclick = () => {
-    dom.searchFilterEdit.value = null;
-    getThings(Environments.current()['pinnedThings']);
-  };
+  loadThingTemplates();
+
+  dom.ulThingDefinitions.addEventListener('click', (event) => {
+    dom.inputThingDefinition.value = event.target.textContent;
+    thingJsonEditor.setValue(JSON.stringify(thingTemplates[event.target.textContent], null, 2), -1);
+  });
 
   dom.searchFilterEdit.onchange = removeMoreFromThingList;
 
-  document.getElementById('createThing').onclick = () => {
-    API.callDittoREST('POST', '/things', {})
+  dom.buttonCreateThing.onclick = async () => {
+    const editorValue = thingJsonEditor.getValue();
+    API.callDittoREST('POST', '/things', editorValue === '' ? {} : JSON.parse(editorValue))
         .then((data) => {
-          refreshThing(data.thingId);
-          getThings([data.thingId]);
+          refreshThing(data.thingId, () => {
+            getThings([data.thingId]);
+          });
         });
   };
 
-  document.getElementById('putThing').onclick = clickModifyThing('PUT');
-  document.getElementById('deleteThing').onclick = clickModifyThing('DELETE');
+  dom.buttonSaveThing.onclick = () => {
+    Utils.assert(dom.thingId.value, 'Thing ID is empty', dom.thingId);
+    modifyThing('PUT');
+  };
 
-  dom.thingsTable.addEventListener('click', (event) => {
+  dom.buttonDeleteThing.onclick = () => {
+    Utils.assert(dom.thingId.value, 'Thing ID is empty', dom.thingId);
+    Utils.confirm(`Are you sure you want to delete thing<br>'${theThing.thingId}'?`, 'Delete', () => {
+      modifyThing('DELETE');
+    });
+  };
+
+  dom.thingsTableBody.addEventListener('click', (event) => {
     if (event.target && event.target.nodeName === 'TD') {
       const row = event.target.parentNode;
       if (row.id === 'searchThingsMore') {
@@ -77,7 +104,11 @@ export async function ready() {
         event.stopImmediatePropagation();
         searchThings(dom.searchFilterEdit.value, theSearchCursor);
       } else {
-        refreshThing(row.id);
+        if (theThing && theThing.thingId === row.id) {
+          setTheThing(null);
+        } else {
+          refreshThing(row.id);
+        }
       }
     }
   });
@@ -86,30 +117,62 @@ export async function ready() {
     thingJsonEditor.renderer.updateFull();
   });
 
+  dom.tabThings.onclick = onTabActivated;
+
   dom.searchFilterEdit.focus();
-};
+}
+
+function loadThingTemplates() {
+  fetch('templates/thingTemplates.json')
+      .then((response) => {
+        response.json().then((loadedTemplates) => {
+          thingTemplates = loadedTemplates;
+          Utils.addDropDownEntries(dom.ulThingDefinitions, Object.keys(thingTemplates));
+        });
+      });
+}
 
 /**
  * Fills the things table UI with the given things
  * @param {Array} thingsList Array of thing json objects
  */
 function fillThingsTable(thingsList) {
-  const fields = Environments.current().fieldList.filter((f) => f.active).map((f) => f.path);
+  const activeFields = Environments.current().fieldList.filter((f) => f.active);
+  fillHeaderRow();
+  let thingSelected = false;
   thingsList.forEach((item, t) => {
-    const row = dom.thingsTable.insertRow();
+    const row = dom.thingsTableBody.insertRow();
+    fillBodyRow(row, item);
+  });
+  if (!thingSelected) {
+    setTheThing(null);
+  };
+
+  function fillHeaderRow() {
+    dom.thingsTableHead.innerHTML = '';
+    // Utils.addCheckboxToRow(dom.thingsTableHead, 'checkboxHead', false, null);
+    Utils.insertHeaderCell(dom.thingsTableHead, '');
+    Utils.insertHeaderCell(dom.thingsTableHead, 'Thing ID');
+    activeFields.forEach((field) => {
+      Utils.insertHeaderCell(dom.thingsTableHead, field['label'] ? field.label : field.path);
+    });
+  }
+
+  function fillBodyRow(row, item) {
     row.id = item.thingId;
     if (theThing && (item.thingId === theThing.thingId)) {
+      thingSelected = true;
       row.classList.add('table-active');
-    };
+    }
     Utils.addCheckboxToRow(
         row,
         item.thingId,
         Environments.current().pinnedThings.includes(item.thingId),
-        Environments.togglePinnedThing,
+        togglePinnedThing,
     );
     row.insertCell(-1).innerHTML = item.thingId;
-    fields.forEach((key, i) => {
-      let path = key.replace(/\//g, '.');
+    activeFields.forEach((field) => {
+      let path = field.path.replace(/\//g, '.');
       if (path.charAt(0) !== '.') {
         path = '$.' + path;
       }
@@ -119,15 +182,7 @@ function fillThingsTable(thingsList) {
       });
       row.insertCell(-1).innerHTML = elem.length !== 0 ? elem[0] : '';
     });
-  });
-};
-
-/**
- * Set the search filter UI component
- * @param {String} filter filter to be filled
- */
-export function setSearchFilterEdit(filter) {
-  dom.searchFilterEdit.value = filter;
+  }
 }
 
 /**
@@ -136,13 +191,6 @@ export function setSearchFilterEdit(filter) {
  * @param {String} cursor (optional) cursor returned from things search for additional pages
  */
 export function searchThings(filter, cursor) {
-  if (cursor) {
-    removeMoreFromThingList();
-  } else {
-    theSearchCursor = null;
-    dom.thingsTable.innerHTML = '';
-  }
-
   document.body.style.cursor = 'progress';
 
   API.callDittoREST('GET',
@@ -152,82 +200,105 @@ export function searchThings(filter, cursor) {
       // ',size(3)' +
       (cursor ? ',cursor(' + cursor + ')' : ''),
   ).then((searchResult) => {
+    if (cursor) {
+      removeMoreFromThingList();
+    } else {
+      theSearchCursor = null;
+      dom.thingsTableBody.innerHTML = '';
+    }
     fillThingsTable(searchResult.items);
     checkMorePages(searchResult);
   }).catch((error) => {
-    // nothing to do if search failed
+    theSearchCursor = null;
+    dom.thingsTableBody.innerHTML = '';
   }).finally(() => {
     document.body.style.cursor = 'default';
   });
-};
+}
 
 /**
  * Gets things from Ditto by thingIds and fills the UI with the result
  * @param {Array} thingIds Array of thingIds
  */
 export function getThings(thingIds) {
-  dom.thingsTable.innerHTML = '';
+  dom.thingsTableBody.innerHTML = '';
   if (thingIds.length > 0) {
     API.callDittoREST('GET',
         `/things?${Fields.getQueryParameter()}&ids=${thingIds}&option=sort(%2BthingId)`,
     ).then(fillThingsTable);
-  };
-};
+  }
+}
 
 /**
  * Returns a click handler for Update thing and delete thing
  * @param {String} method PUT or DELETE
- * @return {function} Click handler function
  */
-function clickModifyThing(method) {
-  return function() {
-    Utils.assert(dom.thingId.value, 'Thing ID is empty');
-    API.callDittoREST(method,
-        '/things/' + dom.thingId.value,
-        method === 'PUT' ? JSON.parse(thingJsonEditor.getValue()) : null,
-    ).then(() => {
-      // todo: perform last things table update
-      method === 'PUT' ? refreshThing(dom.thingId.value) : searchThings();
-    });
-  };
-};
+function modifyThing(method) {
+  API.callDittoREST(method,
+      '/things/' + dom.thingId.value,
+      method === 'PUT' ? JSON.parse(thingJsonEditor.getValue()) : null,
+  ).then(() => {
+    method === 'PUT' ? refreshThing(dom.thingId.value) : SearchFilter.performLastSearch();
+  });
+}
 
 /**
  * Load thing from Ditto and update all UI components
  * @param {String} thingId ThingId
+ * @param {function} successCallback callback function that is called after refresh is finished
  */
-export function refreshThing(thingId) {
+export function refreshThing(thingId, successCallback) {
   API.callDittoREST('GET',
-      `/things/${thingId}?fields=thingId%2Cattributes%2Cfeatures%2C_created%2C_modified%2C_revision%2C_policy`)
-      .then((thing) => setTheThing(thing));
-};
+      `/things/${thingId}?` +
+      'fields=thingId%2Cdefinition%2Cattributes%2Cfeatures%2C_created%2C_modified%2C_revision%2C_policy')
+      .then((thing) => {
+        setTheThing(thing);
+        successCallback && successCallback();
+      })
+      .catch(() => setTheThing());
+}
 
 /**
  * Update all UI components for the given Thing
  * @param {Object} thingJson Thing json
  */
-export function setTheThing(thingJson) {
+function setTheThing(thingJson) {
   theThing = thingJson;
 
-  // Update fields of Thing table
-  dom.thingDetails.innerHTML = '';
-  Utils.addTableRow(dom.thingDetails, 'thingId', theThing.thingId, null, true);
-  Utils.addTableRow(dom.thingDetails, 'policyId', theThing._policy.policyId, null, true);
-  Utils.addTableRow(dom.thingDetails, 'revision', theThing._revision, null, true);
-  Utils.addTableRow(dom.thingDetails, 'created', theThing._created, null, true);
-  Utils.addTableRow(dom.thingDetails, 'modified', theThing._modified, null, true);
-
-  // Update edit thing area
-  dom.thingId.value = theThing.thingId;
-  const thingCopy = JSON.parse(JSON.stringify(theThing));
-  delete thingCopy['_revision'];
-  delete thingCopy['_created'];
-  delete thingCopy['_modified'];
-  delete thingCopy['_policy'];
-  thingCopy.policyId = theThing._policy.policyId;
-  thingJsonEditor.setValue(JSON.stringify(thingCopy, null, 2));
+  updateThingDetailsTable();
+  updateThingJsonEditor();
 
   observers.forEach((observer) => observer.call(null, theThing));
+
+  function updateThingDetailsTable() {
+    dom.thingDetails.innerHTML = '';
+    if (theThing) {
+      Utils.addTableRow(dom.thingDetails, 'thingId', false, true, theThing.thingId);
+      Utils.addTableRow(dom.thingDetails, 'policyId', false, true, theThing._policy.policyId);
+      Utils.addTableRow(dom.thingDetails, 'definition', false, true, theThing.definition ?? '');
+      Utils.addTableRow(dom.thingDetails, 'revision', false, true, theThing._revision);
+      Utils.addTableRow(dom.thingDetails, 'created', false, true, theThing._created);
+      Utils.addTableRow(dom.thingDetails, 'modified', false, true, theThing._modified);
+    }
+  }
+
+  function updateThingJsonEditor() {
+    if (theThing) {
+      dom.thingId.value = theThing.thingId;
+      dom.inputThingDefinition.value = theThing.definition ?? '';
+      const thingCopy = JSON.parse(JSON.stringify(theThing));
+      delete thingCopy['_revision'];
+      delete thingCopy['_created'];
+      delete thingCopy['_modified'];
+      delete thingCopy['_policy'];
+      thingCopy.policyId = theThing._policy.policyId;
+      thingJsonEditor.setValue(JSON.stringify(thingCopy, null, 2), -1);
+    } else {
+      dom.thingId.value = null;
+      dom.inputThingDefinition.value = null;
+      thingJsonEditor.setValue('');
+    }
+  }
 }
 
 /**
@@ -247,15 +318,15 @@ function checkMorePages(searchResult) {
  * Adds a clickable "more" line to the things table UI
  */
 function addMoreToThingList() {
-  const moreCell = dom.thingsTable.insertRow().insertCell(-1);
+  const moreCell = dom.thingsTableBody.insertRow().insertCell(-1);
   moreCell.innerHTML = 'load more...';
-  moreCell.colSpan = dom.thingsTable.rows[0].childElementCount;
+  moreCell.colSpan = dom.thingsTableBody.rows[0].childElementCount;
   moreCell.style.textAlign = 'center';
   moreCell.style.cursor = 'pointer';
   moreCell.disabled = true;
   moreCell.style.color = '#3a8c9a';
   moreCell.parentNode.id = 'searchThingsMore';
-};
+}
 
 /**
  * remove the "more" line from the things table
@@ -265,6 +336,41 @@ function removeMoreFromThingList() {
   if (moreRow) {
     moreRow.parentNode.removeChild(moreRow);
   }
+}
+
+function togglePinnedThing(evt) {
+  if (evt.target.checked) {
+    Environments.current().pinnedThings.push(this.id);
+  } else {
+    const index = Environments.current().pinnedThings.indexOf(this.id);
+    if (index > -1) {
+      Environments.current().pinnedThings.splice(index, 1);
+    }
+  }
+  Environments.environmentsJsonChanged('pinnedThings');
+}
+
+let viewDirty = false;
+
+function onTabActivated() {
+  if (viewDirty) {
+    refreshView();
+    viewDirty = false;
+  }
+}
+
+function onEnvironmentChanged(modifiedField) {
+  if (!['pinnedThings', 'filterList'].includes(modifiedField)) {
+    if (dom.collapseThings.classList.contains('show')) {
+      refreshView();
+    } else {
+      viewDirty = true;
+    }
+  }
+}
+
+function refreshView() {
+  SearchFilter.performLastSearch();
 }
 
 

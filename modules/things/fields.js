@@ -18,7 +18,9 @@ let theFieldIndex = -1;
 
 const dom = {
   fieldPath: null,
+  fieldLabel: null,
   fieldList: null,
+  fieldsModal: null,
 };
 
 /**
@@ -26,16 +28,26 @@ const dom = {
  * @return {String} The fields query parameter for Ditto search
  */
 export function getQueryParameter() {
+  if (!Environments.current().fieldList) {
+    Environments.current().fieldList = [];
+  }
   const fields = Environments.current().fieldList.filter((f) => f.active).map((f) => f.path);
   return 'fields=thingId' + (fields !== '' ? ',' + fields : '');
-};
+}
 
+
+let bsFieldsModal = null;
 /**
  * Set the fieldpath value
  * @param {String} fieldPath new value for the fieldpath
  */
-export function setFieldPath(fieldPath) {
+export function proposeNewField(fieldPath) {
   dom.fieldPath.value = fieldPath;
+  dom.fieldLabel.value = null;
+  if (!bsFieldsModal) {
+    bsFieldsModal = new bootstrap.Modal(dom.fieldsModal);
+  }
+  bsFieldsModal.show();
 }
 
 /**
@@ -44,50 +56,54 @@ export function setFieldPath(fieldPath) {
 export async function ready() {
   Environments.addChangeListener(onEnvironmentChanged);
 
-  Utils.addTab(
-      document.getElementById('thingsTabsItems'),
-      document.getElementById('thingsTabsContent'),
-      'Fields',
-      await( await fetch('modules/things/fields.html')).text(),
-  );
-
   Utils.getAllElementsById(dom);
 
   dom.fieldList.addEventListener('click', (event) => {
     if (event.target && event.target.tagName === 'TD') {
-      if (theFieldIndex === event.target.parentNode.rowIndex) {
-        theFieldIndex = -1;
-        dom.fieldPath.value = null;
-      } else {
-        theFieldIndex = event.target.parentNode.rowIndex;
-        dom.fieldPath.value = Environments.current().fieldList[theFieldIndex].path;
-      }
+      toggleFieldSelection(event.target.parentNode.rowIndex);
     }
   });
 
-  document.getElementById('fieldUpdate').onclick = () => {
-    if (!dom.fieldPath.value) {
-      return;
-    };
-    const fieldExists = Environments.current().fieldList.map((field) => field.path).includes(dom.fieldPath.value);
-    if (theFieldIndex < 0 && !fieldExists) {
-      Environments.current().fieldList.push({
-        active: true,
-        path: dom.fieldPath.value,
-      });
-      theFieldIndex = Environments.current().fieldList.length - 1;
-    } else {
-      Environments.current().fieldList[theFieldIndex].path = dom.fieldPath.value;
-    }
+  dom.fieldsModal.addEventListener('hide.bs.modal', () => {
     Environments.environmentsJsonChanged();
+  });
+
+  document.getElementById('fieldUpdate').onclick = () => {
+    Utils.assert(theFieldIndex >= 0, 'No field selected');
+    const selectedField = Environments.current().fieldList[theFieldIndex];
+    const otherFields = Environments.current().fieldList.filter((elem, i) => i != theFieldIndex);
+    const mapped = otherFields.map((field) => field.path);
+    const cond = mapped.includes(selectedField.path);
+    console.log(cond);
+    Utils.assert(!Environments.current().fieldList
+        .filter((elem, i) => i != theFieldIndex)
+        .map((field) => field.path)
+        .includes(dom.fieldPath.value), 'Changed field path already exists', dom.fieldPath);
+
+    selectedField.path = dom.fieldPath.value;
+    selectedField.label = dom.fieldLabel.value;
+    updateFieldList();
+  };
+
+  document.getElementById('fieldCreate').onclick = () => {
+    Utils.assert(dom.fieldPath.value, 'Field path must not be empty', dom.fieldPath);
+    Utils.assert(!Environments.current().fieldList
+        .map((field) => field.path)
+        .includes(dom.fieldPath.value), 'Field path already exists', dom.fieldPath);
+
+    Environments.current().fieldList.push({
+      active: true,
+      path: dom.fieldPath.value,
+      label: dom.fieldLabel.value ? dom.fieldLabel.value : dom.fieldPath.value.split('/').slice(-1)[0],
+    });
+    updateFieldList();
   };
 
   document.getElementById('fieldDelete').onclick = () => {
-    if (theFieldIndex < 0) {
-      return;
-    }
+    Utils.assert(theFieldIndex >= 0, 'No field selected');
+
     Environments.current().fieldList.splice(theFieldIndex, 1);
-    Environments.environmentsJsonChanged();
+    updateFieldList();
     theFieldIndex = -1;
   };
 
@@ -99,7 +115,7 @@ export async function ready() {
     Environments.current().fieldList.splice(theFieldIndex, 1);
     theFieldIndex--;
     Environments.current().fieldList.splice(theFieldIndex, 0, movedItem);
-    Environments.environmentsJsonChanged();
+    updateFieldList();
   };
 
   document.getElementById('fieldDown').onclick = () => {
@@ -110,9 +126,26 @@ export async function ready() {
     Environments.current().fieldList.splice(theFieldIndex, 1);
     theFieldIndex++;
     Environments.current().fieldList.splice(theFieldIndex, 0, movedItem);
-    Environments.environmentsJsonChanged();
+    updateFieldList();
   };
-};
+}
+
+/**
+ * Selects or de-selects the field for editing
+ * @param {integer} fieldIndex index in fieldlist of field to toggle
+ */
+function toggleFieldSelection(fieldIndex) {
+  if (theFieldIndex === fieldIndex) {
+    theFieldIndex = -1;
+    dom.fieldPath.value = null;
+    dom.fieldLabel.value = null;
+  } else {
+    theFieldIndex = fieldIndex;
+    const selectedField = Environments.current().fieldList[theFieldIndex];
+    dom.fieldPath.value = selectedField.path;
+    dom.fieldLabel.value = selectedField['label'] ? selectedField.label : null;
+  }
+}
 
 /**
  * Callback on environment change. Initializes all UI components for fields
@@ -120,9 +153,9 @@ export async function ready() {
 function onEnvironmentChanged() {
   if (!Environments.current()['fieldList']) {
     Environments.current().fieldList = [];
-  };
+  }
   updateFieldList();
-};
+}
 
 /**
  * (Re-)Initializes the fieldlist in the UI
@@ -135,16 +168,18 @@ function updateFieldList() {
     const row = dom.fieldList.insertRow();
     Utils.addCheckboxToRow(row, i, field.active, toggleFieldActiveEventHandler);
     row.insertCell(-1).innerHTML = field.path;
-    Utils.addClipboardCopyToRow(row);
+    row.insertCell(-1).innerHTML = field['label'] ? field.label : null;
     if (fieldSelected) {
       theFieldIndex = i;
       row.classList.add('table-active');
+      dom.fieldLabel.value = field.label;
     }
   });
   if (theFieldIndex < 0) {
     dom.fieldPath.value = null;
+    dom.fieldLabel.value = null;
   }
-};
+}
 
 /**
  * Event handler for field active check box
@@ -152,6 +187,6 @@ function updateFieldList() {
  */
 function toggleFieldActiveEventHandler(evt) {
   Environments.current().fieldList[evt.target.id].active = evt.target.checked;
-  Environments.environmentsJsonChanged();
-};
+  updateFieldList();
+}
 
